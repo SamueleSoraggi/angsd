@@ -26,6 +26,8 @@
 #include "abcTemplate.h"
 #include "abcAncestry.h"
 #include "abcWriteVcf.h" //<- dump plink files.
+#include "abcDstat2.h"
+
 //below we set some variables that are shared between all the analysis classes
 #define MAX_CLASS 25
 int abc::tot_index =0;
@@ -63,6 +65,7 @@ abc **extra(int &nItem,const char *outfiles,int inputtype,argStruct *arguments){
   tskStuff[nit++] = new abcSmartCounts(outfiles,arguments,inputtype);
   tskStuff[nit++] = new abcTemplate(outfiles,arguments,inputtype);
   tskStuff[nit++] = new abcWriteVcf(outfiles,arguments,inputtype);
+  tskStuff[nit++] = new abcDstat2(outfiles,arguments,inputtype);
 
   //don't touch below
   nItem = nit;
