@@ -8,6 +8,7 @@ extern int SIG_COND;
 #include <stdio.h>
 #include <cstring>
 #include <map>
+#include <zlib.h>
 #include "bambi_interface.h"
 #include "argStruct.h"
 

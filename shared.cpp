@@ -27,10 +27,9 @@
 #include "abcFilter.h"
 #include "abcSmartCounts.h"
 #include "abcWriteFasta.h"
-#include "abcSaf.h"
 //class to keep track of chunk order when dumping results
 #include "printRes.h"
-#include "mUpPile.h"
+
 
 pthread_attr_t attr;
 int andersSux =0;
@@ -43,7 +42,7 @@ pthread_t thread1;
 pthread_cond_t cvMaxThread;
 pthread_mutex_t counterMut;
 
-int currentChr=-1;
+
 int curRunning =0;
 int chunkNumber =1;
 printRes printer;
@@ -110,62 +109,62 @@ void destroy(){
   delete [] allMethods;
 
 }
-void tnode_destroy(tNode*);
-void cleanUptNodeArray(tNode **row,int nSamples){
-  //  fprintf(stderr,"nodearray\n");
+
+
+int *populatePositions(const chunkyT *chk){
+  int *ret = new int[chk->nSites];
+  for(int i=0;i<chk->nSites;i++)
+    ret[i] = chk->nd[i][0].refPos;
+
+  return ret;
+}
+
+
+
+
+void cleanUptNodeArray(tNode *row,int nSamples){
     for(int i=0;i< nSamples;i++) {
-      if(row[i]==NULL)
-	continue;
-      if(row[i]->l2!=0){
-	for(int j=0;j<row[i]->l2;j++)
-	  tnode_destroy(row[i]->insert[j]);
-	free(row[i]->insert);
-      }
-      
-      tnode_destroy(row[i]);
+      if(row[i].l2!=0)
+	for(int j=0;j<row[i].l2;j++)
+	  dalloc_node(row[i].insert[j]);
+	
+      free(row[i].insert);
+      dalloc_node(row[i]);
     }
-    free(row);
+    delete [] row;
 }
 
 void collapse(funkyPars *p){
-  fcb *f = p->for_callback;
-  chunkyT *chk = mergeAllNodes_new(f->dn,f->nFiles);
-  chk->regStart = f->regStart;
-  chk->regStop = f->regStop;
-  chk->refId = f->refId;
+   fcb *f = p->for_callback;
+    chunkyT *chk = mergeAllNodes_new(f->dn,f->nFiles);
+    chk->regStart = f->regStart;
+    chk->regStop = f->regStop;
+    chk->refId = f->refId;
 
-  p->refId = chk->refId;
-  p->numSites=chk->nSites;
-  p->nInd = chk->nSamples;  
+    // assert(!(chk->refPos[0]>f->regStop));//this could happen when we work with regions
 
-  //now chk contains the merged data
-  p->chk = chk;
-  p->posi = new int[chk->nSites];
-  for(int i=0;i<chk->nSites;i++)
-    for(int j=0;j<chk->nSamples;j++)
-      if(chk->nd[i][j]!=NULL){
-	p->posi[i] = chk->nd[i][j]->refPos;
-	break;
+    //regstop and regstart are the usersupplied startstop region, strip ends if needed
+    if((chk->nd[0][0].refPos<chk->regStart)||(chk->nd[chk->nSites-1][0].refPos>chk->regStop)){
+
+      int at=0;
+      for(int i=0;i<chk->nSites;i++){//can be written faster
+	if(chk->nd[i][0].refPos<chk->regStart)//should cleanup
+	  cleanUptNodeArray(chk->nd[i],chk->nSamples);
+	else if(chk->nd[i][0].refPos<chk->regStop)
+	  chk->nd[at++] = chk->nd[i];
+	else
+	  cleanUptNodeArray(chk->nd[i],chk->nSamples);
+	
       }
-
-
-  p->keepSites = new int [p->numSites];
-  for(int i=0;i<p->numSites;i++)
-    p->keepSites[i] = p->nInd;
-
-  /*
-    we are in running different threads now, so dont clean up nodes
-    but modify keeplist
-  */
-  if((p->posi[0]<chk->regStart)||(p->posi[p->numSites-1]>chk->regStop)){
-    for(int i=0;i<p->numSites;i++){
-      if(p->posi[i]<chk->regStart)
-	p->keepSites[i] = 0;
-      if(p->posi[i]>=chk->regStop)
-	p->keepSites[i] = 0;
+      chk->nSites = at;
     }
-  }
-    
+    //now chk contains the merged data
+    p->chk = chk;
+    p->posi = populatePositions(chk);//<-will be new approach
+    p->refId = chk->refId;//thiss will be new approach
+    p->numSites=chk->nSites;
+  
+    p->nInd = chk->nSamples;  
 
 }
 
@@ -175,7 +174,7 @@ int main_analysis(funkyPars *p) {
   //first step is to make a chunk of data from the sample "uppiles"
   if(p->for_callback!=NULL) 
     collapse(p);
-  
+  //assert(p->numSites>0);
   //run all methods (ORDER is defined in general.cpp)
   if(p->numSites==0)
     return 0;
@@ -203,7 +202,7 @@ void *slave(void *ptr){
   pthread_mutex_lock( &counterMut );
   curRunning--;
 
-  
+
   if(nQueueSize==-1){//no limit on queuesize, always signal
     pthread_cond_signal(&cvMaxThread);
   }else{
@@ -270,16 +269,11 @@ void changeChr(int refId){
   ((abcFilter *)allMethods[0])->readSites(refId);
   ((abcWriteFasta *)allMethods[19])->changeChr(refId);//used when changing chr;
   ((abcSmartCounts *)allMethods[20])->changeChr(refId);//used when changing chr;
-  ((abcSaf *)allMethods[11])->changeChr(refId);//used when changing chr;
-#ifdef __WITH_POOL__
-  void flush_queue();
-  flush_queue();
-#endif 
 }
 
 
 void waiter(int refId){
-  //fprintf(stderr,"_%s_\n",__FUNCTION__);fflush(stderr);
+  //  fprintf(stderr,"_%s_\n",__FUNCTION__);fflush(stderr);
 
   //change of chr detected wait untill all threads are done
   if(allMethods[0]->header->n_targets<THRESHOLD_FOR_NICEOUTPUT)
@@ -297,10 +291,8 @@ void waiter(int refId){
     pthread_mutex_unlock(&counterMut);
     sleep(1);
   }
-  if(currentChr==-1||refId!=currentChr){
-    currentChr=refId;
-    changeChr(refId);
-  }
+  changeChr(refId);
+
   
 }
 
@@ -331,7 +323,7 @@ void selector(funkyPars *p){
 
 /*
   initialize all pointers to zero
-*/
+ */
 
 funkyPars *allocFunkyPars(){
 
@@ -388,7 +380,7 @@ void deallocFunkyPars(funkyPars *p) {
     fcb *f = p->for_callback;
     for(int i=0;i<f->nFiles;i++)
       if(f->dn[i].l!=0)//this is nescesarry...
-	free(f->dn[i].nds);
+	delete [] f->dn[i].nds;
     delete [] f->dn;
     delete f;
     f=NULL;
@@ -422,19 +414,17 @@ void deallocFunkyPars(funkyPars *p) {
 //plus one, plus 33
 void printChunkyT(chunkyT *chk,double **liks,char *refs,FILE *fp){
   for(int s=0;s<chk->nSites;s++){
-    fprintf(fp,"%d\t%d\t",chk->refId,chk->nd[s][0]->refPos+1);
+    fprintf(fp,"%d\t%d\t",chk->refId,chk->nd[s][0].refPos+1);
     if(refs!=NULL)
       fprintf(fp,"%c\t",intToRef[refs[s]]);
     for(int n=0;n<chk->nSamples;n++){
-      tNode *nd = chk->nd[s][n];
-      if(nd==NULL)
-	continue;
-      fprintf(fp,"%d\t",nd->l);
-      for(int i=0;i<nd->l;i++)
-	fprintf(fp,"%c",nd->seq[i]);
+      tNode &nd = chk->nd[s][n];
+      fprintf(fp,"%d\t",nd.l);
+      for(int i=0;i<nd.l;i++)
+	fprintf(fp,"%c",nd.seq[i]);
       fprintf(fp,"\t");
-      for(int i=0;i<nd->l;i++)
-	fprintf(fp,"%c",nd->qs[i]+33);
+      for(int i=0;i<nd.l;i++)
+	fprintf(fp,"%c",nd.qs[i]+33);
       fprintf(fp,"\t");
       for(int i=0;i<10;i++)
 	fprintf(fp,"%f ",liks[s][n*10+i]);
@@ -442,21 +432,24 @@ void printChunkyT(chunkyT *chk,double **liks,char *refs,FILE *fp){
     fprintf(fp,"\n");
   }
 }
-#ifdef __WITH_POOL__
-extern int currentnodes;
-#endif
 
+
+
+void *cleanFunky(void *pars){
+  funkyPars *p = (funkyPars *) pars;
+  deallocFunkyPars(p);
+  pthread_exit(NULL);
+}
+
+
+pthread_t cleanThread;
 //only one instance at a time is running this function
 void printFunky(funkyPars *p){
   //  fprintf(stderr,"printFunky killsig=%d nsites=%d refid:%d\n",p->killSig,p->numSites,p->refId);
   if(p->killSig==0) {//don't print the empty killSig chunk
     if((p->chunkNumber%howOften)==0){
       if(isAtty)
-#ifdef __WITH_POOL__
-	fprintf(stderr,"\r\t-> Printing at chr: %s pos:%d chunknumber %d (%d) numSites:%d     ",header->target_name[p->refId],p->posi[0]+1,p->chunkNumber,currentnodes,p->numSites);
-#else
-      fprintf(stderr,"\r\t-> Printing at chr: %s pos:%d chunknumber %d ",header->target_name[p->refId],p->posi[0]+1,p->chunkNumber);
-#endif
+	fprintf(stderr,"\r\t-> Printing at chr: %s pos:%d chunknumber %d",header->target_name[p->refId],p->posi[0]+1,p->chunkNumber);
       else
 	fprintf(stderr,"\t-> Printing at chr: %s pos:%d chunknumber %d\n",header->target_name[p->refId],p->posi[0]+1,p->chunkNumber);
     }if(p->numSites!=0){
@@ -465,8 +458,18 @@ void printFunky(funkyPars *p){
 	  allMethods[i]->print(p);
     }
    
-    deallocFunkyPars(p);
-    
+    //for nThreads>2 we will thread the deallocation
+    if(1||maxThreads<=2)//DRAGON always do clean unthreaded ANDERS
+      deallocFunkyPars(p);
+    else{
+      if(pthread_create( &cleanThread, NULL, cleanFunky, (void*) p)){
+	fprintf(stderr,"[%s] Problem spawning thread\n%s\n",__FUNCTION__,strerror(errno));
+	exit(0);
+      }
+      // fprintf(stderr,"ret=%d\n",ret);
+      pthread_detach(cleanThread);
+    }
+ 
   }else{
     deallocFunkyPars(p);
     pthread_mutex_unlock(&mUpPile_mutex);
