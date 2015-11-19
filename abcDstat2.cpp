@@ -1,4 +1,3 @@
-//hello
 #include <cmath>
 #include <cstdlib>
 
